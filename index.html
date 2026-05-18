@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="MP観測" />
+  <meta name="theme-color" content="#111111" />
+  <link rel="manifest" href="./manifest.json" />
+  <title>MP観測</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f7f7f7;
+      color: #111;
+    }
+    h1 { font-size: 24px; margin: 0 0 20px; }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .mp-buttons {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .mp-buttons button {
+      padding: 14px 0;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      background: #fff;
+      font-size: 18px;
+    }
+    .mp-buttons button.selected {
+      background: #111;
+      color: white;
+      border-color: #111;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+      margin-bottom: 12px;
+      background: white;
+    }
+    button.main {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      background: #111;
+      color: white;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    button.sub {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #111;
+      background: white;
+      color: #111;
+      font-size: 15px;
+      margin-top: 8px;
+    }
+    .log-item {
+      border-bottom: 1px solid #eee;
+      padding: 10px 0;
+      display: grid;
+      grid-template-columns: 90px 40px 1fr;
+      gap: 8px;
+      font-size: 14px;
+      align-items: center;
+    }
+    .log-item:last-child { border-bottom: none; }
+    .timestamp { color: #666; font-size: 12px; }
+    .mp { font-weight: 700; font-size: 18px; text-align: center; }
+    .memo { word-break: break-all; }
+    .empty {
+      color: #777;
+      font-size: 14px;
+      text-align: center;
+      padding: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>MP観測</h1>
+
+  <div class="card">
+    <label>MP値</label>
+    <div class="mp-buttons">
+      <button type="button" data-mp="1">1</button>
+      <button type="button" data-mp="2">2</button>
+      <button type="button" data-mp="3">3</button>
+      <button type="button" data-mp="4">4</button>
+      <button type="button" data-mp="5">5</button>
+    </div>
+
+    <label>メモ / 20文字以内</label>
+    <input id="memoInput" type="text" maxlength="20" placeholder="集中高い" />
+
+    <label>日時</label>
+    <input id="timeInput" type="datetime-local" />
+
+    <button class="main" id="saveButton">送信</button>
+  </div>
+
+  <div class="card">
+    <label>ログ</label>
+    <div id="logList"></div>
+    <button class="sub" id="csvButton">CSVダウンロード</button>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "mp_observer_logs";
+    let selectedMP = null;
+
+    const mpButtons = document.querySelectorAll("[data-mp]");
+    const memoInput = document.getElementById("memoInput");
+    const timeInput = document.getElementById("timeInput");
+    const saveButton = document.getElementById("saveButton");
+    const csvButton = document.getElementById("csvButton");
+    const logList = document.getElementById("logList");
+
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+
+    function nowForInput() {
+      const d = new Date();
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function formatTimestamp(value) {
+      const d = new Date(value);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function getLogs() {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    }
+
+    function saveLogs(logs) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+    }
+
+    function renderLogs() {
+      const logs = getLogs().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      if (logs.length === 0) {
+        logList.innerHTML = `<div class="empty">まだログがありません</div>`;
+        return;
+      }
+
+      logList.innerHTML = logs.map(log => `
+        <div class="log-item">
+          <div class="timestamp">${formatTimestamp(log.timestamp)}</div>
+          <div class="mp">${log.mp}</div>
+          <div class="memo">${escapeHtml(log.memo)}</div>
+        </div>
+      `).join("");
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, function(match) {
+        return {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;"
+        }[match];
+      });
+    }
+
+    mpButtons.forEach(button => {
+      button.addEventListener("click", () => {
+        selectedMP = button.dataset.mp;
+        mpButtons.forEach(b => b.classList.remove("selected"));
+        button.classList.add("selected");
+      });
+    });
+
+    saveButton.addEventListener("click", () => {
+      const memo = memoInput.value.trim();
+      const timestamp = timeInput.value;
+
+      if (!selectedMP) {
+        alert("MP値を選んでください");
+        return;
+      }
+
+      if (memo.length > 20) {
+        alert("メモは20文字以内です");
+        return;
+      }
+
+      if (!timestamp) {
+        alert("日時を入力してください");
+        return;
+      }
+
+      const logs = getLogs();
+      logs.push({
+        timestamp,
+        mp: selectedMP,
+        memo
+      });
+
+      saveLogs(logs);
+
+      memoInput.value = "";
+      timeInput.value = nowForInput();
+      selectedMP = null;
+      mpButtons.forEach(b => b.classList.remove("selected"));
+
+      renderLogs();
+    });
+
+    csvButton.addEventListener("click", () => {
+      const logs = getLogs().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      const header = "timestamp,mp,memo";
+      const rows = logs.map(log => {
+        const timestamp = formatTimestamp(log.timestamp);
+        const memo = `"${String(log.memo).replace(/"/g, '""')}"`;
+        return `${timestamp},${log.mp},${memo}`;
+      });
+
+      const csv = "\uFEFF" + [header, ...rows].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "mp_observer_logs.csv";
+      a.click();
+
+      URL.revokeObjectURL(url);
+    });
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./service-worker.js");
+    }
+
+    timeInput.value = nowForInput();
+    renderLogs();
+  </script>
+</body>
+</html>

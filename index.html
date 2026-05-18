@@ -49,20 +49,19 @@
       color: white;
       border-color: #111;
     }
-input {
-  width: 100%;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid #ccc;
-  font-size: 15px;
-  min-height: 52px;
-  margin-bottom: 12px;
-  background: white;
-}
-
-#timeInput {
-  font-size: 14px;
-}
+    input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      font-size: 15px;
+      min-height: 52px;
+      margin-bottom: 12px;
+      background: white;
+    }
+    #timeInput {
+      font-size: 14px;
+    }
     button.main {
       width: 100%;
       padding: 14px;
@@ -82,6 +81,12 @@ input {
       color: #111;
       font-size: 15px;
       margin-top: 8px;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #666;
+      text-align: center;
     }
     .log-item {
       border-bottom: 1px solid #eee;
@@ -118,22 +123,29 @@ input {
     </div>
 
     <label>メモ / 30文字以内</label>
-    <input id="memoInput" type="text" maxlength="30" placeholder="Feeling euphoric" />
+    <input id="memoInput" type="text" maxlength="30" placeholder="集中高い" />
 
     <label>日時</label>
     <input id="timeInput" type="datetime-local" />
 
     <button class="main" id="saveButton">送信</button>
+    <div class="status" id="statusText">端末に保存し、可能ならスプシにも送信します</div>
   </div>
 
   <div class="card">
     <label>ログ</label>
     <div id="logList"></div>
     <button class="sub" id="csvButton">CSVダウンロード</button>
+    <button class="sub" id="syncButton">未送信ログをスプシ送信</button>
   </div>
 
   <script>
-    const STORAGE_KEY = "mp_observer_logs";
+    const DB_NAME = "mp_observer_db";
+    const DB_VERSION = 1;
+    const STORE_NAME = "logs";
+
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz5e_dUfhPrQzgXwejHYjYzozLi3wJZRuQZrJfXfDnvsZmOleVlSXdaFpux95wtuUWW/exec";
+
     let selectedMP = null;
 
     const mpButtons = document.querySelectorAll("[data-mp]");
@@ -141,7 +153,9 @@ input {
     const timeInput = document.getElementById("timeInput");
     const saveButton = document.getElementById("saveButton");
     const csvButton = document.getElementById("csvButton");
+    const syncButton = document.getElementById("syncButton");
     const logList = document.getElementById("logList");
+    const statusText = document.getElementById("statusText");
 
     function pad(n) {
       return String(n).padStart(2, "0");
@@ -153,37 +167,11 @@ input {
     }
 
     function formatTimestamp(value) {
-      const d = new Date(value);
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-
-    function getLogs() {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    }
-
-    function saveLogs(logs) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
-    }
-
-    function renderLogs() {
-      const logs = getLogs().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-      if (logs.length === 0) {
-        logList.innerHTML = `<div class="empty">まだログがありません</div>`;
-        return;
-      }
-
-      logList.innerHTML = logs.map(log => `
-        <div class="log-item">
-          <div class="timestamp">${formatTimestamp(log.timestamp)}</div>
-          <div class="mp">${log.mp}</div>
-          <div class="memo">${escapeHtml(log.memo)}</div>
-        </div>
-      `).join("");
+      return value.replace("T", " ");
     }
 
     function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, function(match) {
+      return String(str).replace(/[&<>"']/g, function(match) {
         return {
           "&": "&amp;",
           "<": "&lt;",
@@ -194,6 +182,126 @@ input {
       });
     }
 
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onupgradeneeded = event => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME, {
+              keyPath: "id",
+              autoIncrement: true
+            });
+          }
+        };
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function addLog(log) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.add(log);
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function getLogs() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.getAll();
+
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function updateLog(log) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.put(log);
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function renderLogs() {
+      const logs = await getLogs();
+      logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+      if (logs.length === 0) {
+        logList.innerHTML = `<div class="empty">まだログがありません</div>`;
+        return;
+      }
+
+      logList.innerHTML = logs.map(log => `
+        <div class="log-item">
+          <div class="timestamp">${escapeHtml(log.timestamp)}</div>
+          <div class="mp">${escapeHtml(log.mp)}</div>
+          <div class="memo">${escapeHtml(log.memo)}${log.synced ? "" : "・未送信"}</div>
+        </div>
+      `).join("");
+    }
+
+    async function sendToGoogleSheet(log) {
+      if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("ここに")) {
+        throw new Error("Google Script URLが未設定です");
+      }
+
+      await fetch(GOOGLE_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify({
+          timestamp: log.timestamp,
+          mp: log.mp,
+          memo: log.memo
+        })
+      });
+
+      log.synced = true;
+      await updateLog(log);
+    }
+
+    async function syncUnsyncedLogs() {
+      const logs = await getLogs();
+      const unsynced = logs.filter(log => !log.synced);
+
+      if (unsynced.length === 0) {
+        statusText.textContent = "未送信ログはありません";
+        return;
+      }
+
+      statusText.textContent = `未送信 ${unsynced.length} 件を送信中...`;
+
+      for (const log of unsynced) {
+        try {
+          await sendToGoogleSheet(log);
+        } catch (e) {
+          statusText.textContent = "一部送信できませんでした。通信環境を確認してください";
+          await renderLogs();
+          return;
+        }
+      }
+
+      statusText.textContent = "スプシ送信完了";
+      await renderLogs();
+    }
+
     mpButtons.forEach(button => {
       button.addEventListener("click", () => {
         selectedMP = button.dataset.mp;
@@ -202,7 +310,7 @@ input {
       });
     });
 
-    saveButton.addEventListener("click", () => {
+    saveButton.addEventListener("click", async () => {
       const memo = memoInput.value.trim();
       const timestamp = timeInput.value;
 
@@ -221,31 +329,42 @@ input {
         return;
       }
 
-      const logs = getLogs();
-      logs.push({
-        timestamp,
+      const log = {
+        timestamp: formatTimestamp(timestamp),
         mp: selectedMP,
-        memo
-      });
+        memo,
+        synced: false
+      };
 
-      saveLogs(logs);
+      const id = await addLog(log);
+      log.id = id;
 
       memoInput.value = "";
       timeInput.value = nowForInput();
       selectedMP = null;
       mpButtons.forEach(b => b.classList.remove("selected"));
 
-      renderLogs();
+      await renderLogs();
+
+      try {
+        statusText.textContent = "端末保存完了。スプシ送信中...";
+        await sendToGoogleSheet(log);
+        statusText.textContent = "端末保存・スプシ送信完了";
+        await renderLogs();
+      } catch (e) {
+        statusText.textContent = "端末保存済み。スプシ未送信";
+        await renderLogs();
+      }
     });
 
-    csvButton.addEventListener("click", () => {
-      const logs = getLogs().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    csvButton.addEventListener("click", async () => {
+      const logs = await getLogs();
+      logs.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
       const header = "timestamp,mp,memo";
       const rows = logs.map(log => {
-        const timestamp = formatTimestamp(log.timestamp);
         const memo = `"${String(log.memo).replace(/"/g, '""')}"`;
-        return `${timestamp},${log.mp},${memo}`;
+        return `${log.timestamp},${log.mp},${memo}`;
       });
 
       const csv = "\uFEFF" + [header, ...rows].join("\n");
@@ -259,6 +378,8 @@ input {
 
       URL.revokeObjectURL(url);
     });
+
+    syncButton.addEventListener("click", syncUnsyncedLogs);
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("./service-worker.js");

@@ -1,4 +1,4 @@
-const CACHE_NAME = "mp-observer-v3";
+const CACHE_NAME = "mp-observer-v4";
 
 const FILES_TO_CACHE = [
   "./",
